@@ -1,19 +1,21 @@
 #!/usr/bin/env python
 
-from pathlib import Path
 import argparse
 import asyncio
 import logging
 import re
+from pathlib import Path
 
-import httpx
-from tabulate import tabulate
 import git
+import httpx
+import urllib3
+from tabulate import tabulate
 
 import build_docs
 
 logger = logging.getLogger(__name__)
-VERSIONS = build_docs.parse_versions_from_devguide()
+http = urllib3.PoolManager()
+VERSIONS = build_docs.parse_versions_from_peps_site(http)
 LANGUAGES = build_docs.parse_languages_from_config()
 
 
@@ -22,25 +24,25 @@ def parse_args():
         description="""Check the version of our build in different branches
         Hint: Use with | column -t"""
     )
-    parser.add_argument("cpython_clone", help="Path to a clone of cpython", type=Path)
+    parser.add_argument("cpython_clone", help="Path to a clone of CPython", type=Path)
     return parser.parse_args()
 
 
 def find_upstream_remote_name(repo: git.Repo) -> str:
-    """Find a remote of repo matching the regex url_pattern."""
+    """Find a remote in the repo that matches the URL pattern."""
     for remote in repo.remotes:
         for url in remote.urls:
             if "github.com/python" in url:
                 return f"{remote.name}/"
 
 
-def find_sphinx_spec(text: str):
+def find_sphinx_spec(text: str) -> str:
     if found := re.search(
         """sphinx[=<>~]{1,2}[0-9.]{3,}|needs_sphinx = [0-9.'"]*""",
         text,
         flags=re.IGNORECASE,
     ):
-        return found.group(0).replace(" ", "")
+        return found.group(0).replace(" ", "").replace('"', "'")
     return "ø"
 
 
@@ -60,7 +62,6 @@ def find_sphinx_in_files(repo: git.Repo, branch_or_tag, filenames):
 
 
 CONF_FILES = {
-    "travis": ".travis.yml",
     "requirements.txt": "Doc/requirements.txt",
     "conf.py": "Doc/conf.py",
 }
@@ -83,7 +84,7 @@ def search_sphinx_versions_in_cpython(repo: git.Repo):
         for version in VERSIONS
     ]
     headers = ["version", *CONF_FILES.keys()]
-    print(tabulate(table, headers=headers, tablefmt="rst", disable_numparse=True))
+    print(tabulate(table, headers=headers, tablefmt="github", disable_numparse=True))
 
 
 async def get_version_in_prod(language: str, version: str) -> str:
@@ -109,31 +110,33 @@ async def which_sphinx_is_used_in_production():
     table = [
         [
             version.name,
-            *await asyncio.gather(
-                *[
-                    get_version_in_prod(language.tag, version.name)
-                    for language in LANGUAGES
-                ]
-            ),
+            *await asyncio.gather(*[
+                get_version_in_prod(language.tag, version.name)
+                for language in LANGUAGES
+            ]),
         ]
         for version in VERSIONS
     ]
     headers = ["version", *[language.tag for language in LANGUAGES]]
-    print(tabulate(table, headers=headers, tablefmt="rst", disable_numparse=True))
+    print(tabulate(table, headers=headers, tablefmt="github", disable_numparse=True))
 
 
-def main():
+def check_versions(cpython_clone: str) -> None:
     logging.basicConfig(level=logging.INFO)
     logging.getLogger("charset_normalizer").setLevel(logging.WARNING)
     logging.getLogger("asyncio").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
-    args = parse_args()
-    repo = git.Repo(args.cpython_clone)
+    repo = git.Repo(cpython_clone)
     print("Sphinx configuration in various branches:", end="\n\n")
     search_sphinx_versions_in_cpython(repo)
     print()
     print("Sphinx build as seen on docs.python.org:", end="\n\n")
     asyncio.run(which_sphinx_is_used_in_production())
+
+
+def main():
+    args = parse_args()
+    check_versions(args.cpython_clone)
 
 
 if __name__ == "__main__":
